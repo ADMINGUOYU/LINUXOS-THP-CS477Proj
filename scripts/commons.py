@@ -77,6 +77,15 @@ def fill_current_os_release(value: str) -> str:
     """
     # try to expand {kernel_release}
     return value.replace("{kernel_release}", os.uname().release)
+
+
+def project_path(value: str) -> Path:
+    """
+    Resolve a configured path relative to the project,
+    expanding the kernel release.
+    """
+    path = Path(fill_current_os_release(value)).expanduser()
+    return (project_root / path).resolve()
     
 
 # [JSON helper] =========================

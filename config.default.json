@@ -2,6 +2,10 @@
   "kernel": {
     "repository": "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git",
     "revision": "8cd9520d35a6c38db6567e97dd93b1f11f185dc6",
+    "version_makefile_url": "https://raw.githubusercontent.com/torvalds/linux/{revision}/Makefile",
+    "checkout_path": "./linux",
+    "build_path": "./build/kernel",
+    "install_record": "./build/kernel-install.local.json",
     "name": "THP_kernel"
   },
   "environment": {
