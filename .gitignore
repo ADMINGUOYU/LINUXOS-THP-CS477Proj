@@ -1,0 +1,42 @@
+# Local configuration, downloaded sources and generated output.
+*.local.json
+/linux/
+/build/
+
+# Local development environment
+/.vscode/
+/.venv/
+__pycache__/
+*.py[cod]
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.so.*
+*.dylib
+*.dll
+*.exe
+*.out
+*.d
+*.gch
+*.pch
+*.pdb
+*.ilk
+*.gcda
+*.gcno
+*.gcov
+*.profraw
+*.profdata
+*.dSYM/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+compile_commands.json
+*.egg-info/
+.pytest_cache/
+
+# Editor and operating-system temporary files.
+*~
+*.swp
+.DS_Store

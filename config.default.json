@@ -1,0 +1,23 @@
+{
+  "kernel": {
+    "repository": "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git",
+    "revision": "8cd9520d35a6c38db6567e97dd93b1f11f185dc6",
+    "name": "THP_kernel"
+  },
+  "environment": {
+    "python": {
+        "venv_path": "./.venv",
+        "requirements": "./requirements.txt"
+    }
+  },
+  "policy": {
+    "base_page_bytes": 4096,
+    "region_bytes": 2097152,
+    "density_threshold_pages": 384,
+    "run_threshold_pages": 256,
+    "collapse_retries": 3
+  },
+  "evaluation": {
+    "results_path": "./results"
+  }
+}
