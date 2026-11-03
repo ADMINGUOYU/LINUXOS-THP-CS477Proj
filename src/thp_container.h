@@ -1,6 +1,6 @@
-// file: thp_containar.h
-# ifndef THP_CONTAINAR_H
-# define THP_CONTAINAR_H
+// file: thp_container.h
+# ifndef THP_CONTAINER_H
+# define THP_CONTAINER_H
 
 # include <stddef.h>
 # include <stdint.h>
@@ -49,7 +49,7 @@ struct thp_region
 
 // Module-owned fields: callers may access base/length, but must not modify fields.
 // The handler uses this mutex for every metadata access and descriptor transition.
-struct thp_containar
+struct thp_container
 {
     void * base;                 // start of the owned anonymous mapping, aligned to region_bytes
     size_t length;               // total mapping size in bytes: region_count * region_bytes
@@ -67,22 +67,22 @@ struct thp_containar
 // region count is the number of THP_REGION_BYTES to allocate
 // Return 0 on success, -1 with errno on failure.
 // Start a handler before touching base, otherwise missing faults will block.
-int thp_containar_create(struct thp_containar ** output, size_t region_count);
+int thp_container_create(struct thp_container ** output, size_t region_count);
 // Snapshot one region without racing the service threads.
-int thp_containar_region(struct thp_containar * containar, size_t index,
+int thp_container_region(struct thp_container * container, size_t index,
                          struct thp_region * snapshot);
 // Close userfaultfd to unregister all remaining ranges and release blocked faults.
-// Handler-only while attached; caller must hold containar->mutex.
-void thp_containar_release_registration(struct thp_containar * containar);
+// Handler-only while attached; caller must hold container->mutex.
+void thp_container_release_registration(struct thp_container * container);
 // Record a distinct page and update the longest run; caller must hold the mutex.
 // Returns 1 for a new touch, 0 for a duplicate, -1 for an invalid index.
-int thp_containar_touch(struct thp_containar * containar, size_t region_index,
+int thp_container_touch(struct thp_container * container, size_t region_index,
                         size_t page_index);
 // Destroy only after stopping application access and destroying its handler.
 // Returns EBUSY if a handler is still attached; NULL is harmless.
-int thp_containar_destroy(struct thp_containar * containar);
+int thp_container_destroy(struct thp_container * container);
 
 // Lifecycle calls are owner-thread operations, not concurrent with one another.
 // Do not fork, unmap, remap, discard pages or change arena advice while active.
 // UFFD_USER_MODE_ONLY requires userspace first touches before kernel I/O access.
-# endif // THP_CONTAINAR_H
+# endif // THP_CONTAINER_H

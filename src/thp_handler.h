@@ -4,7 +4,7 @@
 
 # include <stddef.h>
 # include <stdint.h>
-# include "thp_containar.h"
+# include "thp_container.h"
 
 // [CONFIGURATION] =======================
 /** 
@@ -33,35 +33,35 @@ struct thp_handler_stats
     int runtime_errno; // nonzero means tracking failed; discard experiment results
 };
 
-// Opaque thread/queue owner; the containar module owns mapping and metadata.
+// Opaque thread/queue owner; the container module owns mapping and metadata.
 struct thp_handler;
 
 // [PUBLIC API] ==========================
-// Pass a newly registered, untouched containar. Output must initially be NULL.
+// Pass a newly registered, untouched container. Output must initially be NULL.
 // Thresholds are base-page counts, combined with OR. Retries follow EAGAIN only.
 // No JSON/configuration loading or global sysctl changes occur in either module.
-int thp_handler_start(struct thp_handler * * output, struct thp_containar * containar);
+int thp_handler_start(struct thp_handler * * output, struct thp_container * container);
 // Obtain counters while the service threads are running or after stop.
 int thp_handler_snapshot(struct thp_handler * handler, struct thp_handler_stats * stats);
 // First join all application threads accessing the mapping, then stop the handler.
-// Stops registration and drains queued collapses; does not unmap the containar.
+// Stops registration and drains queued collapses; does not unmap the container.
 // Idempotent. Returns -1/errno for fatal tracking errors even after a clean stop.
 int thp_handler_stop(struct thp_handler * handler);
 // Stops, joins and frees the handler, then sets *handler to NULL and detaches it.
 // On a tracking error resources are still freed if joins succeeded; returns -1.
-// Destroy the containar afterwards. Lifecycle calls must be serialised by the owner.
+// Destroy the container afterwards. Lifecycle calls must be serialised by the owner.
 int thp_handler_destroy(struct thp_handler * * handler);
 
 // A fatal handler error closes userfaultfd to release blocked application threads.
 // Those threads can finish using ordinary faults, but resulting measurements are invalid.
 // No cancellation: an in-progress synchronous kernel collapse must return before join.
 // Typical ownership sequence (check all return values):
-//   thp_containar_create(&containar, region_count);
-//   thp_handler_start(&handler, containar);
-//   ... userspace workload accesses containar->base; join all workload threads ...
+//   thp_container_create(&container, region_count);
+//   thp_handler_start(&handler, container);
+//   ... userspace workload accesses container->base; join all workload threads ...
 //   thp_handler_stop(handler);
 //   thp_handler_snapshot(handler, &stats);
-//   thp_containar_region(containar, index, &region);
+//   thp_container_region(container, index, &region);
 //   thp_handler_destroy(&handler);
-//   thp_containar_destroy(containar);
+//   thp_container_destroy(container);
 # endif // THP_HANDLER_H

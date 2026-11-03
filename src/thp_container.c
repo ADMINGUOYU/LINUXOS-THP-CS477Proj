@@ -1,6 +1,6 @@
-// file: thp_containar.c
+// file: thp_container.c
 # define _GNU_SOURCE
-# include "thp_containar.h"
+# include "thp_container.h"
 
 // Linux UAPI and libraries (C99)
 # include <errno.h>
@@ -18,14 +18,14 @@
 # endif
 
 // [INTERNAL API] (forward declarations) ==
-static int _allocate_mapping(struct thp_containar * containar);
-static int _register_mapping(struct thp_containar * containar);
+static int _allocate_mapping(struct thp_container * container);
+static int _register_mapping(struct thp_container * container);
 static int _page_touched(const struct thp_region * region, size_t page_index);
 
 // Over-allocate and trim both ends to own an exactly aligned anonymous mapping.
-static int _allocate_mapping(struct thp_containar * containar)
+static int _allocate_mapping(struct thp_container * container)
 {
-    size_t total = containar->length + containar->region_bytes;
+    size_t total = container->length + container->region_bytes;
     void * mapping;
     uintptr_t aligned;
     size_t prefix;
@@ -44,10 +44,10 @@ static int _allocate_mapping(struct thp_containar * containar)
         errno = failure;
         return -1;
     }
-    aligned = ((uintptr_t)mapping + containar->region_bytes - 1) &
-              ~(uintptr_t)(containar->region_bytes - 1);
+    aligned = ((uintptr_t)mapping + container->region_bytes - 1) &
+              ~(uintptr_t)(container->region_bytes - 1);
     prefix = aligned - (uintptr_t)mapping;
-    suffix = total - prefix - containar->length;
+    suffix = total - prefix - container->length;
     if (prefix != 0 && munmap(mapping, prefix) != 0)
     {
         failure = errno;
@@ -55,19 +55,19 @@ static int _allocate_mapping(struct thp_containar * containar)
         errno = failure;
         return -1;
     }
-    if (suffix != 0 && munmap((void * )(aligned + containar->length), suffix) != 0)
+    if (suffix != 0 && munmap((void * )(aligned + container->length), suffix) != 0)
     {
         failure = errno;
-        munmap((void * )aligned, containar->length + suffix);
+        munmap((void * )aligned, container->length + suffix);
         errno = failure;
         return -1;
     }
-    containar->base = (void * )aligned;
+    container->base = (void * )aligned;
     return 0;
 }
 
 // Negotiate missing-fault support and register only the aligned data mapping.
-static int _register_mapping(struct thp_containar * containar)
+static int _register_mapping(struct thp_container * container)
 {
     struct uffdio_api api =
     {
@@ -80,14 +80,14 @@ static int _register_mapping(struct thp_containar * containar)
 
     // Do not silently elevate privileges or fall back to a different fault mode.
 # ifdef SYS_userfaultfd
-    containar->uffd = (int)syscall(SYS_userfaultfd,
+    container->uffd = (int)syscall(SYS_userfaultfd,
                                   O_CLOEXEC | O_NONBLOCK | UFFD_USER_MODE_ONLY);
 # else
     errno = ENOSYS;
 # endif
-    if (containar->uffd < 0)
+    if (container->uffd < 0)
         return -1;
-    if (ioctl(containar->uffd, UFFDIO_API, &api) != 0)
+    if (ioctl(container->uffd, UFFDIO_API, &api) != 0)
         return -1;
     if (!(api.ioctls & (UINT64_C(1) << _UFFDIO_REGISTER)) ||
         !(api.ioctls & (UINT64_C(1) << _UFFDIO_UNREGISTER)))
@@ -95,10 +95,10 @@ static int _register_mapping(struct thp_containar * containar)
         errno = ENOTSUP;
         return -1;
     }
-    registration.range.start = (uintptr_t)containar->base;
-    registration.range.len = containar->length;
+    registration.range.start = (uintptr_t)container->base;
+    registration.range.len = container->length;
     registration.mode = UFFDIO_REGISTER_MODE_MISSING;
-    if (ioctl(containar->uffd, UFFDIO_REGISTER, &registration) != 0)
+    if (ioctl(container->uffd, UFFDIO_REGISTER, &registration) != 0)
         return -1;
     if (!(registration.ioctls & (UINT64_C(1) << _UFFDIO_ZEROPAGE)) ||
         !(registration.ioctls & (UINT64_C(1) << _UFFDIO_WAKE)))
@@ -118,9 +118,9 @@ static int _page_touched(const struct thp_region * region, size_t page_index)
 
 // [PUBLIC API] ==========================
 // Construct mapping and external metadata, publishing ownership only on success.
-int thp_containar_create(struct thp_containar ** output, size_t region_count)
+int thp_container_create(struct thp_container ** output, size_t region_count)
 {
-    struct thp_containar * containar;
+    struct thp_container * container;
     int failure;
 
     size_t region_bytes = THP_REGION_BYTES;
@@ -148,50 +148,50 @@ int thp_containar_create(struct thp_containar ** output, size_t region_count)
         errno = ENOTSUP;
         return -1;
     }
-    containar = calloc(1, sizeof(*containar));
-    if (containar == NULL)
+    container = calloc(1, sizeof(*container));
+    if (container == NULL)
         return -1;
-    containar->uffd = -1;
-    containar->length = region_count * region_bytes;
-    containar->region_count = region_count;
-    containar->base_page_bytes = base_page_bytes;
-    containar->region_bytes = region_bytes;
-    failure = pthread_mutex_init(&containar->mutex, NULL);
+    container->uffd = -1;
+    container->length = region_count * region_bytes;
+    container->region_count = region_count;
+    container->base_page_bytes = base_page_bytes;
+    container->region_bytes = region_bytes;
+    failure = pthread_mutex_init(&container->mutex, NULL);
     if (failure != 0)
     {
-        free(containar);
+        free(container);
         errno = failure;
         return -1;
     }
     // calloc places metadata outside the mmap range registered with userfaultfd.
-    containar->regions = calloc(region_count, sizeof(*containar->regions));
-    if (containar->regions == NULL || _allocate_mapping(containar) != 0 ||
-        _register_mapping(containar) != 0)
+    container->regions = calloc(region_count, sizeof(*container->regions));
+    if (container->regions == NULL || _allocate_mapping(container) != 0 ||
+        _register_mapping(container) != 0)
     {
         failure = errno;
-        thp_containar_destroy(containar);
+        thp_container_destroy(container);
         errno = failure;
         return -1;
     }
-    *output = containar;
+    *output = container;
     return 0;
 }
 
 // Update only the run joined by a new first touch; preserve distinct-page counts.
-int thp_containar_touch(struct thp_containar * containar, size_t region_index,
+int thp_container_touch(struct thp_container * container, size_t region_index,
                         size_t page_index)
 {
     struct thp_region * region;
     size_t left = page_index;
     size_t right = page_index;
 
-    if (containar == NULL || region_index >= containar->region_count ||
+    if (container == NULL || region_index >= container->region_count ||
         page_index >= THP_PAGES_PER_REGION)
     {
         errno = EINVAL;
         return -1;
     }
-    region = &containar->regions[region_index];
+    region = &container->regions[region_index];
     if (_page_touched(region, page_index))
         return 0;
     region->bitmap[page_index / THP_BITMAP_WORD_BITS] |=
@@ -208,55 +208,55 @@ int thp_containar_touch(struct thp_containar * containar, size_t region_index,
 }
 
 // Return a consistent copy while service threads may still be updating the region.
-int thp_containar_region(struct thp_containar * containar, size_t index,
+int thp_container_region(struct thp_container * container, size_t index,
                          struct thp_region * snapshot)
 {
-    if (containar == NULL || snapshot == NULL || index >= containar->region_count)
+    if (container == NULL || snapshot == NULL || index >= container->region_count)
     {
         errno = EINVAL;
         return -1;
     }
-    pthread_mutex_lock(&containar->mutex);
-    *snapshot = containar->regions[index];
-    pthread_mutex_unlock(&containar->mutex);
+    pthread_mutex_lock(&container->mutex);
+    *snapshot = container->regions[index];
+    pthread_mutex_unlock(&container->mutex);
     return 0;
 }
 
 // Closing the last uffd reference wakes waiters and unregisters remaining ranges.
-void thp_containar_release_registration(struct thp_containar * containar)
+void thp_container_release_registration(struct thp_container * container)
 {
     size_t index;
 
-    if (containar->uffd >= 0)
+    if (container->uffd >= 0)
     {
-        close(containar->uffd);
-        containar->uffd = -1;
+        close(container->uffd);
+        container->uffd = -1;
     }
-    if (containar->regions != NULL)
-        for (index = 0; index < containar->region_count; ++index)
-            if (containar->regions[index].state == THP_TRACKING ||
-                containar->regions[index].state == THP_UNREGISTERING)
-                containar->regions[index].state = THP_TRACKING_STOPPED;
+    if (container->regions != NULL)
+        for (index = 0; index < container->region_count; ++index)
+            if (container->regions[index].state == THP_TRACKING ||
+                container->regions[index].state == THP_UNREGISTERING)
+                container->regions[index].state = THP_TRACKING_STOPPED;
 }
 
 // Never unmap memory while its handler or application threads can still use it.
-int thp_containar_destroy(struct thp_containar * containar)
+int thp_container_destroy(struct thp_container * container)
 {
-    if (containar == NULL)
+    if (container == NULL)
         return 0;
-    pthread_mutex_lock(&containar->mutex);
-    if (containar->handler_attached)
+    pthread_mutex_lock(&container->mutex);
+    if (container->handler_attached)
     {
-        pthread_mutex_unlock(&containar->mutex);
+        pthread_mutex_unlock(&container->mutex);
         errno = EBUSY;
         return -1;
     }
-    thp_containar_release_registration(containar);
-    pthread_mutex_unlock(&containar->mutex);
-    if (containar->base != NULL && munmap(containar->base, containar->length) != 0)
+    thp_container_release_registration(container);
+    pthread_mutex_unlock(&container->mutex);
+    if (container->base != NULL && munmap(container->base, container->length) != 0)
         return -1;
-    free(containar->regions);
-    pthread_mutex_destroy(&containar->mutex);
-    free(containar);
+    free(container->regions);
+    pthread_mutex_destroy(&container->mutex);
+    free(container);
     return 0;
 }
