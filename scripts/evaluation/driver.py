@@ -217,8 +217,11 @@ def main() -> int:
             log("evaluation", "WARN", "Managed run changes host THP settings temporarily; other applications are affected")
             # Sudo authenticates on the terminal; the pipe carries only fixed setting requests.
             subprocess.run(["sudo", "-v"], check = True)
+            # Keep the terminal session so sudo can reuse its session-scoped credentials.
+            # A separate process group still isolates the supervisor from foreground Ctrl-C;
+            # the driver kills its workload before closing the restoration lease.
             supervisor = subprocess.Popen(["sudo", "-n", sys.executable, "-I", "-B", str(Path(__file__).with_name("environment.py"))],
-                                          stdin = subprocess.PIPE, stdout = subprocess.PIPE, text = True, start_new_session = True)
+                                          stdin = subprocess.PIPE, stdout = subprocess.PIPE, text = True, preexec_fn = os.setpgrp)
             greeting = supervisor_reply(supervisor)
             if not greeting.get("ready"):
                 raise RuntimeError("Environment supervisor did not start; see its diagnostic above")
