@@ -2,6 +2,7 @@
 *.local.json
 /linux/
 /build/
+/results/
 
 # Local development environment
 /.vscode/

@@ -22,6 +22,14 @@
     "collapse_retries": 3
   },
   "evaluation": {
-    "results_path": "./results"
+    "results_path": "./results",
+    "regions": 32,
+    "iterations": 100,
+    "threads": 8,
+    "repetitions": 5,
+    "wait_ms": 0,
+    "seed": 477,
+    "timeout_seconds": 120,
+    "tcmalloc_library": null
   }
 }

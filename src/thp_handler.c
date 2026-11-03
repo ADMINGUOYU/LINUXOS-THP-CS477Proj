@@ -88,12 +88,19 @@ static int _handle_fault(struct thp_handler * handler, const struct uffd_msg * m
     pthread_mutex_lock(&container->mutex);
     ++handler->stats.fault_events;
     region = &container->regions[region_index];
-    // Unregister wakes pending faults; old queued messages require no further ioctl.
+    // A stale event can outlive unregistering its region. Wake any remaining waiter
+    // explicitly; it will retry using ordinary kernel faults without repopulating it.
     if (region->state != THP_TRACKING)
     {
         ++handler->stats.stale_events;
+        range.start = address & ~(uintptr_t)(container->base_page_bytes - 1);
+        range.len = container->base_page_bytes;
+        do
+            result = ioctl(container->uffd, UFFDIO_WAKE, &range);
+        while (result < 0 && errno == EINTR);
+        failure = result == 0 ? 0 : errno;
         pthread_mutex_unlock(&container->mutex);
-        return 0;
+        return failure;
     }
     zero.range.start = address & ~(uintptr_t)(container->base_page_bytes - 1);
     zero.range.len = container->base_page_bytes;
@@ -134,6 +141,16 @@ static int _handle_fault(struct thp_handler * handler, const struct uffd_msg * m
         if (result < 0)
             failure = errno;
         else
+        {
+            // Resolve the hand-off before publishing work, including pending readers
+            // of the shared zero page. UFFDIO_WAKE does not require registration.
+            do
+                result = ioctl(container->uffd, UFFDIO_WAKE, &range);
+            while (result < 0 && errno == EINTR);
+            if (result < 0)
+                failure = errno;
+        }
+        if (failure == 0)
         {
             region->state = THP_QUEUED_FOR_COLLAPSE;
             handler->queue[handler->queue_tail] = region_index;
