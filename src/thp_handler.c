@@ -18,6 +18,12 @@
 # define MADV_COLLAPSE 25
 # endif
 
+// [CONFIGURATION] =======================
+size_t THP_DENSITY_THRESHOLD_PAGES = 384;
+size_t THP_RUN_THRESHOLD_PAGES = 256;
+size_t THP_COLLAPSE_RETRIES = 3;
+// [CONFIGURATION] ENDs ==================
+
 // [INTERNAL STATE] ======================
 // The container mutex protects the queue, counters and all region state changes.
 // Only the fault thread uses uffd after startup. The worker never resolves faults.
@@ -280,8 +286,8 @@ int thp_handler_start(struct thp_handler ** output, struct thp_container * conta
     int failure;
 
     if (output == NULL || *output != NULL || container == NULL ||
-        THP_DENSITY_THRESHOLD_PAGES == 0 || THP_DENSITY_THRESHOLD_PAGES > THP_PAGES_PER_REGION ||
-        THP_RUN_THRESHOLD_PAGES == 0 || THP_RUN_THRESHOLD_PAGES > THP_PAGES_PER_REGION)
+        THP_DENSITY_THRESHOLD_PAGES == 0 || THP_DENSITY_THRESHOLD_PAGES > container->region_bytes / container->base_page_bytes ||
+        THP_RUN_THRESHOLD_PAGES == 0 || THP_RUN_THRESHOLD_PAGES > container->region_bytes / container->base_page_bytes)
     {
         errno = EINVAL;
         return -1;

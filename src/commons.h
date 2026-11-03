@@ -47,9 +47,9 @@ void commons_log(const char * module, enum log_level level, const char * message
 // [Utilities] (logging) ENDs ============
 
 
-// [SYSTEM POLICY] =======================
-// define the system policy struct
-struct sys_policy
+// [SYSTEM CONFIGURATION] =======================
+// General configuration fields; JSON key paths remain explicit in the loader.
+struct sys_config
 {
     size_t base_page_bytes; // the size of a base page in bytes
     size_t region_bytes; // the size of a region in bytes
@@ -58,11 +58,22 @@ struct sys_policy
     size_t collapse_retries; // the number of times to retry collapsing a region before giving up
 };
 
-// function to read the system policy from a json file
-// Read project_root/project_config[1] and copy the five policy keys.
+// Read general configuration from JSON; retain the existing loader name.
+// Merge existing project_config files in order; local values override defaults.
+// Missing files are skipped; all five policy keys must exist after merging.
+// This only fills the struct; callers assign module globals before starting work.
 // Return 0 on success, -1 with errno on file/JSON/type errors; output is unchanged.
-int load_sys_policy(struct sys_policy * policy);
+int load_sys_policy(struct sys_config * config);
+// Startup usage (include the THP headers and check the loader result first):
+//   struct sys_config config;
+//   load_sys_policy(&config);
+//   THP_BASE_PAGE_BYTES = config.base_page_bytes;
+//   THP_REGION_BYTES = config.region_bytes;
+//   THP_DENSITY_THRESHOLD_PAGES = config.density_threshold_pages;
+//   THP_RUN_THRESHOLD_PAGES = config.run_threshold_pages;
+//   THP_COLLAPSE_RETRIES = config.collapse_retries;
+// Complete these assignments before creating any container or handler.
 
-// [SYSTEM POLICY] ENDs ===================
+// [SYSTEM CONFIGURATION] ENDs ===================
 
 # endif // COMMONS_H    

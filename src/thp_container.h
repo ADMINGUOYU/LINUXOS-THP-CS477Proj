@@ -8,16 +8,15 @@
 # include <pthread.h>
 
 // [CONFIGURATION] =======================
-/** 
- *  TODO: sync these with the json configuration file 
- *  Currently these macros are the sole geometry configuration; JSON is not read.
-*/
-# define THP_BASE_PAGE_BYTES ((size_t)4096)
-# define THP_REGION_BYTES ((size_t)2097152)
+// Set these globals from sys_config before creating containers or starting threads.
+// Do not modify configuration until all containers and handlers are destroyed.
+extern size_t THP_BASE_PAGE_BYTES;
+extern size_t THP_REGION_BYTES;
 # define THP_PAGES_PER_REGION (THP_REGION_BYTES / THP_BASE_PAGE_BYTES)
-// Derived bitmap geometry: eight uint64_t words for 512 base pages.
+// Derived geometry stays as expressions, not independently editable settings.
+// Default bitmap geometry: eight uint64_t words for 512 base pages.
 # define THP_BITMAP_WORD_BITS (sizeof(uint64_t) * CHAR_BIT)
-# define THP_BITMAP_WORD_COUNT ((THP_PAGES_PER_REGION + THP_BITMAP_WORD_BITS - 1) / THP_BITMAP_WORD_BITS)
+# define THP_BITMAP_WORD_COUNT (THP_PAGES_PER_REGION / THP_BITMAP_WORD_BITS + (THP_PAGES_PER_REGION % THP_BITMAP_WORD_BITS != 0))
 // [CONFIGURATION] ENDs ==================
 
 // [METADATA] ============================
@@ -49,7 +48,8 @@ enum thp_region_state
 // Counts stop when registration is removed.
 struct thp_region
 {
-    uint64_t bitmap[THP_BITMAP_WORD_COUNT]; // 1 bit per base page
+    uint64_t * bitmap;        // owned array with bitmap_word_count words; 1 bit per base page
+    size_t bitmap_word_count; // allocated word count, also carried in snapshots
     size_t touched_count;
     size_t max_contiguous_run;
     enum thp_region_state state;
@@ -78,7 +78,7 @@ struct thp_container
 // [PUBLIC API] ==========================
 // Allocate private anonymous memory; register only for THP_POLICY_SELECTIVE.
 // Output must initially be NULL (i.e. struct thp_container * container = NULL;) used to receive the new pointer on success
-// Geometry comes from the configuration macros.
+// Geometry comes from the configuration globals.
 // region count is the number of THP_REGION_BYTES to allocate
 // Return 0 on success, -1 with errno on failure.
 // In selective mode, start a handler before touching base or missing faults block.
@@ -93,9 +93,15 @@ int thp_container_create(struct thp_container ** output, size_t region_count,
 // untouched pages become eligible for huge-page faults after this advice change.
 int thp_container_enable_khugepaged(struct thp_container * container);
 // Snapshot one region without racing the service threads.
+// Pass a zero-initialised snapshot with bitmap == NULL; success allocates its bitmap.
+// Caller must call thp_container_region_destroy after use. Failure leaves the snapshot unchanged.
 // Tracking snapshots are selective-only; other policies return -1/ENOTSUP.
 int thp_container_region(struct thp_container * container, size_t index,
                          struct thp_region * snapshot);
+// Free an owned bitmap and reset the region; does not free the region struct itself.
+// Accepts NULL or a zero-initialised/already destroyed region; repeated calls are safe.
+// For caller-owned snapshots only; live container metadata is cleaned up by container destroy.
+void thp_container_region_destroy(struct thp_region * region);
 // Close userfaultfd to unregister all remaining ranges and release blocked faults.
 // Handler-only while attached; caller must hold container->mutex.
 void thp_container_release_registration(struct thp_container * container);

@@ -7,14 +7,12 @@
 # include "thp_container.h"
 
 // [CONFIGURATION] =======================
-/** 
- *  TODO: sync these with the json configuration file 
- *  Currently these macros are the sole geometry configuration; JSON is not read.
-*/
+// Set these globals from sys_config before creating containers or starting threads.
+// Do not modify configuration until all containers and handlers are destroyed.
 // Counts are base pages, combined with OR; retries are additional EAGAIN attempts.
-# define THP_DENSITY_THRESHOLD_PAGES ((size_t)384)
-# define THP_RUN_THRESHOLD_PAGES ((size_t)256)
-# define THP_COLLAPSE_RETRIES ((size_t)3)
+extern size_t THP_DENSITY_THRESHOLD_PAGES;
+extern size_t THP_RUN_THRESHOLD_PAGES;
+extern size_t THP_COLLAPSE_RETRIES;
 // [CONFIGURATION] ENDs ==================
 
 // [STATISTICS] ==========================
@@ -62,7 +60,10 @@ int thp_handler_destroy(struct thp_handler ** handler);
 //   ... userspace workload accesses container->base; join all workload threads ...
 //   thp_handler_stop(handler);
 //   thp_handler_snapshot(handler, &stats);
+//   struct thp_region region = { 0 };
 //   thp_container_region(container, index, &region);
+//   ... inspect the snapshot ...
+//   thp_container_region_destroy(&region); // release the copied bitmap
 //   thp_handler_destroy(&handler);
 //   thp_container_destroy(container);
 # endif // THP_HANDLER_H

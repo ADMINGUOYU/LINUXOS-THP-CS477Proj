@@ -7,6 +7,7 @@
 # include <fcntl.h>
 # include <linux/userfaultfd.h>
 # include <stdlib.h>
+# include <string.h>
 # include <sys/ioctl.h>
 # include <sys/mman.h>
 # include <sys/syscall.h>
@@ -16,6 +17,11 @@
 # ifndef UFFD_USER_MODE_ONLY
 # define UFFD_USER_MODE_ONLY 1
 # endif
+
+// [CONFIGURATION] =======================
+size_t THP_BASE_PAGE_BYTES = 4096UL;
+size_t THP_REGION_BYTES = 2097152UL;
+// [CONFIGURATION] ENDs ==================
 
 // [INTERNAL API] (forward declarations) ==
 static int _allocate_mapping(struct thp_container * container);
@@ -128,6 +134,8 @@ int thp_container_create(struct thp_container ** output, size_t region_count,
 
     size_t region_bytes = THP_REGION_BYTES;
     size_t base_page_bytes = THP_BASE_PAGE_BYTES;
+    size_t index;
+    size_t bitmap_words;
 
     // Alignment masks require power-of-two geometry and whole base-page regions.
     if (base_page_bytes == 0 || region_bytes == 0 ||
@@ -136,6 +144,12 @@ int thp_container_create(struct thp_container ** output, size_t region_count,
         region_bytes < base_page_bytes || region_bytes % base_page_bytes != 0)
     {
         errno = EINVAL;
+        return -1;
+    }
+    bitmap_words = THP_BITMAP_WORD_COUNT;
+    if (bitmap_words > SIZE_MAX / sizeof(uint64_t))
+    {
+        errno = EOVERFLOW;
         return -1;
     }
     // Reject unknown modes before acquiring any resources.
@@ -178,8 +192,22 @@ int thp_container_create(struct thp_container ** output, size_t region_count,
     // calloc places metadata outside the mmap range registered with userfaultfd.
     if (policy == THP_POLICY_SELECTIVE)
         container->regions = calloc(region_count, sizeof(*container->regions));
-    if ((policy == THP_POLICY_SELECTIVE && container->regions == NULL) ||
-        _allocate_mapping(container) != 0 ||
+    // Allocate every bitmap separately from the registered application mapping.
+    failure = policy == THP_POLICY_SELECTIVE && container->regions == NULL ? ENOMEM : 0;
+    for (index = 0; failure == 0 && policy == THP_POLICY_SELECTIVE && index < region_count; ++index)
+    {
+        container->regions[index].bitmap_word_count = bitmap_words;
+        container->regions[index].bitmap = calloc(bitmap_words, sizeof(uint64_t));
+        if (container->regions[index].bitmap == NULL)
+            failure = ENOMEM;
+    }
+    if (failure != 0)
+    {
+        thp_container_destroy(container);
+        errno = failure;
+        return -1;
+    }
+    if (_allocate_mapping(container) != 0 ||
         (policy == THP_POLICY_SELECTIVE && _register_mapping(container) != 0))
     {
         failure = errno;
@@ -213,7 +241,7 @@ int thp_container_touch(struct thp_container * container, size_t region_index,
     size_t right = page_index;
 
     if (container == NULL || region_index >= container->region_count ||
-        page_index >= THP_PAGES_PER_REGION)
+        page_index >= container->region_bytes / container->base_page_bytes)
     {
         errno = EINVAL;
         return -1;
@@ -233,7 +261,7 @@ int thp_container_touch(struct thp_container * container, size_t region_index,
     // Runs may cross multiple bitmap words, including the 63/64 boundary.
     while (left > 0 && _page_touched(region, left - 1))
         --left;
-    while (right + 1 < THP_PAGES_PER_REGION && _page_touched(region, right + 1))
+    while (right + 1 < container->region_bytes / container->base_page_bytes && _page_touched(region, right + 1))
         ++right;
     if (right - left + 1 > region->max_contiguous_run)
         region->max_contiguous_run = right - left + 1;
@@ -244,7 +272,10 @@ int thp_container_touch(struct thp_container * container, size_t region_index,
 int thp_container_region(struct thp_container * container, size_t index,
                          struct thp_region * snapshot)
 {
-    if (container == NULL || snapshot == NULL || index >= container->region_count)
+    uint64_t * bitmap;
+    size_t bitmap_bytes;
+
+    if (container == NULL || snapshot == NULL || snapshot->bitmap != NULL || index >= container->region_count)
     {
         errno = EINVAL;
         return -1;
@@ -256,9 +287,30 @@ int thp_container_region(struct thp_container * container, size_t index,
         return -1;
     }
     pthread_mutex_lock(&container->mutex);
+    // Copy the bitmap while locked so the snapshot never aliases live metadata.
+    bitmap_bytes = container->regions[index].bitmap_word_count * sizeof(*bitmap);
+    bitmap = malloc(bitmap_bytes);
+    if (bitmap == NULL)
+    {
+        pthread_mutex_unlock(&container->mutex);
+        errno = ENOMEM;
+        return -1;
+    }
+    memcpy(bitmap, container->regions[index].bitmap, bitmap_bytes);
     *snapshot = container->regions[index];
+    snapshot->bitmap = bitmap;
     pthread_mutex_unlock(&container->mutex);
     return 0;
+}
+
+// Release region-owned storage, leaving the struct ready for another snapshot.
+void thp_container_region_destroy(struct thp_region * region)
+{
+    if (region == NULL)
+        return;
+    // Clear the pointer and metadata together so repeated cleanup is harmless.
+    free(region->bitmap);
+    *region = (struct thp_region){ 0 };
 }
 
 // Closing the last uffd reference wakes waiters and unregisters remaining ranges.
@@ -281,6 +333,8 @@ void thp_container_release_registration(struct thp_container * container)
 // Never unmap memory while its handler or application threads can still use it.
 int thp_container_destroy(struct thp_container * container)
 {
+    size_t index;
+
     if (container == NULL)
         return 0;
     pthread_mutex_lock(&container->mutex);
@@ -294,6 +348,10 @@ int thp_container_destroy(struct thp_container * container)
     pthread_mutex_unlock(&container->mutex);
     if (container->base != NULL && munmap(container->base, container->length) != 0)
         return -1;
+    // Release external bitmaps, including partially constructed containers.
+    if (container->regions != NULL)
+        for (index = 0; index < container->region_count; ++index)
+            thp_container_region_destroy(&container->regions[index]);
     free(container->regions);
     pthread_mutex_destroy(&container->mutex);
     free(container);
