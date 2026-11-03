@@ -30,14 +30,16 @@ static int _allocate_mapping(struct thp_containar * containar)
     uintptr_t aligned;
     size_t prefix;
     size_t suffix;
+    int memory_advice = containar->policy == THP_POLICY_ALWAYS ? MADV_HUGEPAGE : MADV_NOHUGEPAGE;
     int failure;
 
     mapping = mmap(NULL, total, PROT_READ | PROT_WRITE,
                    MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (mapping == MAP_FAILED)
         return -1;
-    // First touches must remain 4 KiB until the worker selects a region.
-    if (madvise(mapping, total, MADV_NOHUGEPAGE) != 0)
+    // First touches remain base pages unless the policy requests THP immediately.
+    // Selective mode retains NOHUGEPAGE until the worker selects a region.
+    if (madvise(mapping, total, memory_advice) != 0)
     {
         failure = errno;
         munmap(mapping, total);
@@ -118,7 +120,8 @@ static int _page_touched(const struct thp_region * region, size_t page_index)
 
 // [PUBLIC API] ==========================
 // Construct mapping and external metadata, publishing ownership only on success.
-int thp_containar_create(struct thp_containar ** output, size_t region_count)
+int thp_containar_create(struct thp_containar ** output, size_t region_count,
+                         enum thp_policy_mode policy)
 {
     struct thp_containar * containar;
     int failure;
@@ -135,10 +138,17 @@ int thp_containar_create(struct thp_containar ** output, size_t region_count)
         errno = EINVAL;
         return -1;
     }
+    // Reject unknown modes before acquiring any resources.
+    if (policy != THP_POLICY_DISABLED && policy != THP_POLICY_ALWAYS &&
+        policy != THP_POLICY_KHUGEPAGED && policy != THP_POLICY_SELECTIVE)
+    {
+        errno = EINVAL;
+        return -1;
+    }
     // Validate ownership and allocation sizes before creating the mapping.
     if (output == NULL || *output != NULL || region_count == 0 ||
         region_count > (SIZE_MAX - region_bytes) / region_bytes ||
-        region_count > SIZE_MAX / sizeof(struct thp_region))
+        (policy == THP_POLICY_SELECTIVE && region_count > SIZE_MAX / sizeof(struct thp_region)))
     {
         errno = EINVAL;
         return -1;
@@ -152,6 +162,7 @@ int thp_containar_create(struct thp_containar ** output, size_t region_count)
     if (containar == NULL)
         return -1;
     containar->uffd = -1;
+    containar->policy = policy;
     containar->length = region_count * region_bytes;
     containar->region_count = region_count;
     containar->base_page_bytes = base_page_bytes;
@@ -163,10 +174,13 @@ int thp_containar_create(struct thp_containar ** output, size_t region_count)
         errno = failure;
         return -1;
     }
+    // Only selective mode needs external metadata and userfaultfd registration.
     // calloc places metadata outside the mmap range registered with userfaultfd.
-    containar->regions = calloc(region_count, sizeof(*containar->regions));
-    if (containar->regions == NULL || _allocate_mapping(containar) != 0 ||
-        _register_mapping(containar) != 0)
+    if (policy == THP_POLICY_SELECTIVE)
+        containar->regions = calloc(region_count, sizeof(*containar->regions));
+    if ((policy == THP_POLICY_SELECTIVE && containar->regions == NULL) ||
+        _allocate_mapping(containar) != 0 ||
+        (policy == THP_POLICY_SELECTIVE && _register_mapping(containar) != 0))
     {
         failure = errno;
         thp_containar_destroy(containar);
@@ -175,6 +189,19 @@ int thp_containar_create(struct thp_containar ** output, size_t region_count)
     }
     *output = containar;
     return 0;
+}
+
+// Make the populated mapping eligible for asynchronous kernel promotion.
+int thp_containar_enable_khugepaged(struct thp_containar * containar)
+{
+    // Keep this phase transition exclusive to the delayed kernel policy.
+    if (containar == NULL || containar->policy != THP_POLICY_KHUGEPAGED)
+    {
+        errno = EINVAL;
+        return -1;
+    }
+    // No registration, worker or explicit collapse is involved in this policy.
+    return madvise(containar->base, containar->length, MADV_HUGEPAGE);
 }
 
 // Update only the run joined by a new first touch; preserve distinct-page counts.
@@ -189,6 +216,12 @@ int thp_containar_touch(struct thp_containar * containar, size_t region_index,
         page_index >= THP_PAGES_PER_REGION)
     {
         errno = EINVAL;
+        return -1;
+    }
+    // Ordinary kernel faults are not tracked by this module.
+    if (containar->policy != THP_POLICY_SELECTIVE)
+    {
+        errno = ENOTSUP;
         return -1;
     }
     region = &containar->regions[region_index];
@@ -214,6 +247,12 @@ int thp_containar_region(struct thp_containar * containar, size_t index,
     if (containar == NULL || snapshot == NULL || index >= containar->region_count)
     {
         errno = EINVAL;
+        return -1;
+    }
+    // Do not present absent measurements as zero-valued tracking results.
+    if (containar->policy != THP_POLICY_SELECTIVE)
+    {
+        errno = ENOTSUP;
         return -1;
     }
     pthread_mutex_lock(&containar->mutex);

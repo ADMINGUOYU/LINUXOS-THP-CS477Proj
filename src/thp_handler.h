@@ -38,9 +38,10 @@ struct thp_handler;
 
 // [PUBLIC API] ==========================
 // Pass a newly registered, untouched containar. Output must initially be NULL.
+// Requires THP_POLICY_SELECTIVE; other policies return -1/ENOTSUP.
 // Thresholds are base-page counts, combined with OR. Retries follow EAGAIN only.
 // No JSON/configuration loading or global sysctl changes occur in either module.
-int thp_handler_start(struct thp_handler * * output, struct thp_containar * containar);
+int thp_handler_start(struct thp_handler ** output, struct thp_containar * containar);
 // Obtain counters while the service threads are running or after stop.
 int thp_handler_snapshot(struct thp_handler * handler, struct thp_handler_stats * stats);
 // First join all application threads accessing the mapping, then stop the handler.
@@ -50,13 +51,13 @@ int thp_handler_stop(struct thp_handler * handler);
 // Stops, joins and frees the handler, then sets *handler to NULL and detaches it.
 // On a tracking error resources are still freed if joins succeeded; returns -1.
 // Destroy the containar afterwards. Lifecycle calls must be serialised by the owner.
-int thp_handler_destroy(struct thp_handler * * handler);
+int thp_handler_destroy(struct thp_handler ** handler);
 
 // A fatal handler error closes userfaultfd to release blocked application threads.
 // Those threads can finish using ordinary faults, but resulting measurements are invalid.
 // No cancellation: an in-progress synchronous kernel collapse must return before join.
 // Typical ownership sequence (check all return values):
-//   thp_containar_create(&containar, region_count);
+//   thp_containar_create(&containar, region_count, THP_POLICY_SELECTIVE);
 //   thp_handler_start(&handler, containar);
 //   ... userspace workload accesses containar->base; join all workload threads ...
 //   thp_handler_stop(handler);

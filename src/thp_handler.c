@@ -274,7 +274,7 @@ static void * _promotion_main(void * argument)
 
 // [PUBLIC API] ==========================
 // Attach exactly one service to a registered containar, then start both threads.
-int thp_handler_start(struct thp_handler * * output, struct thp_containar * containar)
+int thp_handler_start(struct thp_handler ** output, struct thp_containar * containar)
 {
     struct thp_handler * handler;
     int failure;
@@ -284,6 +284,12 @@ int thp_handler_start(struct thp_handler * * output, struct thp_containar * cont
         THP_RUN_THRESHOLD_PAGES == 0 || THP_RUN_THRESHOLD_PAGES > THP_PAGES_PER_REGION)
     {
         errno = EINVAL;
+        return -1;
+    }
+    // Ordinary kernel policies must never acquire fault or promotion threads.
+    if (containar->policy != THP_POLICY_SELECTIVE)
+    {
+        errno = ENOTSUP;
         return -1;
     }
     // Claim the containar before allocating thread state; it cannot be destroyed now.
@@ -418,7 +424,7 @@ int thp_handler_stop(struct thp_handler * handler)
 }
 
 // Free the service only after successful joins, preserving runtime errors for callers.
-int thp_handler_destroy(struct thp_handler * * owner)
+int thp_handler_destroy(struct thp_handler ** owner)
 {
     struct thp_handler * handler;
     int failure;
