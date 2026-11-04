@@ -35,13 +35,13 @@ enum thp_policy_mode
 // NOTE: as state transitions (maintained by threaded handlers)
 enum thp_region_state
 {
+    THP_TRACKING_STOPPED = 0, // default
     THP_TRACKING,
     THP_UNREGISTERING,
     THP_QUEUED_FOR_COLLAPSE,
     THP_COLLAPSING,
     THP_PROMOTED,
-    THP_COLLAPSE_FAILED,
-    THP_TRACKING_STOPPED
+    THP_COLLAPSE_FAILED
 };
 
 // Selective-only metadata, stored outside the registered mapping.

@@ -24,19 +24,18 @@ size_t THP_REGION_BYTES = 2097152UL;
 // [CONFIGURATION] ENDs ==================
 
 // [INTERNAL API] (forward declarations) ==
-static int _allocate_mapping(struct thp_container * container);
+static int _allocate_mapping(struct thp_container * container, int memory_advice);
 static int _register_mapping(struct thp_container * container);
 static int _page_touched(const struct thp_region * region, size_t page_index);
 
 // Over-allocate and trim both ends to own an exactly aligned anonymous mapping.
-static int _allocate_mapping(struct thp_container * container)
+static int _allocate_mapping(struct thp_container * container, int memory_advice)
 {
     size_t total = container->length + container->region_bytes;
     void * mapping;
     uintptr_t aligned;
     size_t prefix;
     size_t suffix;
-    int memory_advice = container->policy == THP_POLICY_ALWAYS ? MADV_HUGEPAGE : MADV_NOHUGEPAGE;
     int failure;
 
     mapping = mmap(NULL, total, PROT_READ | PROT_WRITE,
@@ -46,32 +45,26 @@ static int _allocate_mapping(struct thp_container * container)
     // First touches remain base pages unless the policy requests THP immediately.
     // Selective mode retains NOHUGEPAGE until the worker selects a region.
     if (madvise(mapping, total, memory_advice) != 0)
-    {
-        failure = errno;
-        munmap(mapping, total);
-        errno = failure;
-        return -1;
-    }
+        goto unmap_mapping;
     aligned = ((uintptr_t)mapping + container->region_bytes - 1) &
               ~(uintptr_t)(container->region_bytes - 1);
     prefix = aligned - (uintptr_t)mapping;
     suffix = total - prefix - container->length;
     if (prefix != 0 && munmap(mapping, prefix) != 0)
-    {
-        failure = errno;
-        munmap(mapping, total);
-        errno = failure;
-        return -1;
-    }
+        goto unmap_mapping;
+    // after trimming the prefix, cleanup must cover only the remaining mapping
+    mapping = (void * )aligned;
+    total -= prefix;
     if (suffix != 0 && munmap((void * )(aligned + container->length), suffix) != 0)
-    {
-        failure = errno;
-        munmap((void * )aligned, container->length + suffix);
-        errno = failure;
-        return -1;
-    }
+        goto unmap_mapping;
     container->base = (void * )aligned;
     return 0;
+
+unmap_mapping:
+    failure = errno;
+    munmap(mapping, total);
+    errno = failure;
+    return -1;
 }
 
 // Negotiate missing-fault support and register only the aligned data mapping.
@@ -136,6 +129,7 @@ int thp_container_create(struct thp_container ** output, size_t region_count,
     size_t base_page_bytes = THP_BASE_PAGE_BYTES;
     size_t index;
     size_t bitmap_words;
+    int memory_advice;
 
     // Alignment masks require power-of-two geometry and whole base-page regions.
     if (base_page_bytes == 0 || region_bytes == 0 ||
@@ -146,23 +140,25 @@ int thp_container_create(struct thp_container ** output, size_t region_count,
         errno = EINVAL;
         return -1;
     }
-    bitmap_words = THP_BITMAP_WORD_COUNT;
-    if (bitmap_words > SIZE_MAX / sizeof(uint64_t))
+    // switch mapping behaviour once
+    // -> system call to madvise() with MADV_HUGEPAGE or MADV_NOHUGEPAGE?
+    switch (policy)
     {
-        errno = EOVERFLOW;
-        return -1;
-    }
-    // Reject unknown modes before acquiring any resources.
-    if (policy != THP_POLICY_DISABLED && policy != THP_POLICY_ALWAYS &&
-        policy != THP_POLICY_KHUGEPAGED && policy != THP_POLICY_SELECTIVE)
-    {
-        errno = EINVAL;
-        return -1;
+        case THP_POLICY_ALWAYS:
+            memory_advice = MADV_HUGEPAGE;
+            break;
+        case THP_POLICY_DISABLED:
+        case THP_POLICY_KHUGEPAGED:
+        case THP_POLICY_SELECTIVE:
+            memory_advice = MADV_NOHUGEPAGE;
+            break;
+        default:
+            errno = EINVAL;
+            return -1;
     }
     // Validate ownership and allocation sizes before creating the mapping.
     if (output == NULL || *output != NULL || region_count == 0 ||
-        region_count > (SIZE_MAX - region_bytes) / region_bytes ||
-        (policy == THP_POLICY_SELECTIVE && region_count > SIZE_MAX / sizeof(struct thp_region)))
+        region_count > (SIZE_MAX - region_bytes) / region_bytes)
     {
         errno = EINVAL;
         return -1;
@@ -172,9 +168,12 @@ int thp_container_create(struct thp_container ** output, size_t region_count,
         errno = ENOTSUP;
         return -1;
     }
+
+    // allocate container objext (struct)
     container = calloc(1, sizeof(*container));
     if (container == NULL)
         return -1;
+    // initialise container object (explict)
     container->uffd = -1;
     container->policy = policy;
     container->handler_attached = 0;
@@ -182,50 +181,71 @@ int thp_container_create(struct thp_container ** output, size_t region_count,
     container->region_count = region_count;
     container->base_page_bytes = base_page_bytes;
     container->region_bytes = region_bytes;
+    // initialise mutex (pthread_mutex_init)
     failure = pthread_mutex_init(&container->mutex, NULL);
     if (failure != 0)
+        goto free_container;
+    
+    // allocate and trim the mapping with policy decided `advice`
+    if (_allocate_mapping(container, memory_advice) != 0)
+        goto destroy_container;
+
+    // usual kernel policies are ready once mapping advice is installed
+    if (policy != THP_POLICY_SELECTIVE)
     {
-        free(container);
-        errno = failure;
-        return -1;
+        *output = container;
+        return 0;
     }
+
+    /*** BELOW: normal `Selective` mode setup ***/
+
     // Only selective mode needs external metadata and userfaultfd registration.
+    // i.e. if (policy == THP_POLICY_SELECTIVE) { ... }
+    bitmap_words = THP_BITMAP_WORD_COUNT;
+    if (bitmap_words > SIZE_MAX / sizeof(uint64_t) ||
+        region_count > SIZE_MAX / sizeof(*container->regions))
+    {
+        errno = EOVERFLOW;
+        goto destroy_container;
+    }
     // calloc places metadata outside the mmap range registered with userfaultfd.
-    if (policy == THP_POLICY_SELECTIVE)
-        container->regions = calloc(region_count, sizeof(*container->regions));
-    // Initialise every state
-    if (container->regions != NULL)
-        for (index = 0; index < region_count; ++index)
-            container->regions[index].state = THP_TRACKING_STOPPED;
+    // NOTE: calloc will do 0 initialisation
+    container->regions = calloc(region_count, sizeof(*container->regions));
+    if (container->regions == NULL)
+        goto destroy_container;
+    // Initialise every state before a bitmap allocation can fail partway through.
+    for (index = 0; index < region_count; ++index)
+        container->regions[index].state = THP_TRACKING_STOPPED;
     // Allocate every bitmap separately from the registered application mapping.
-    failure = policy == THP_POLICY_SELECTIVE && container->regions == NULL ? ENOMEM : 0;
-    for (index = 0; failure == 0 && policy == THP_POLICY_SELECTIVE && index < region_count; ++index)
+    for (index = 0; index < region_count; ++index)
     {
         container->regions[index].bitmap_word_count = bitmap_words;
         container->regions[index].bitmap = calloc(bitmap_words, sizeof(uint64_t));
         if (container->regions[index].bitmap == NULL)
-            failure = ENOMEM;
+            goto destroy_container;
     }
-    if (failure != 0)
-    {
-        thp_container_destroy(container);
-        errno = failure;
-        return -1;
-    }
-    if (_allocate_mapping(container) != 0 ||
-        (policy == THP_POLICY_SELECTIVE && _register_mapping(container) != 0))
-    {
-        failure = errno;
-        thp_container_destroy(container);
-        errno = failure;
-        return -1;
-    }
-    // Tracking begins only after the mapping has been successfully registered
-    if (policy == THP_POLICY_SELECTIVE)
-        for (index = 0; index < region_count; ++index)
-            container->regions[index].state = THP_TRACKING;
+    if (_register_mapping(container) != 0)
+        goto destroy_container;
+    // Tracking begins only after the mapping has been successfully registered.
+    for (index = 0; index < region_count; ++index)
+        container->regions[index].state = THP_TRACKING;
+    
+    // all done and pass back the pointers
     *output = container;
     return 0;
+
+destroy_container:
+    // The mutex is initialised; normal destruction also handles partial metadata
+    failure = errno;
+    thp_container_destroy(container);
+    errno = failure;
+    return -1;
+
+free_container:
+    // Mutex initialisation failed, so normal destruction cannot be used yet
+    free(container);
+    errno = failure;
+    return -1;
 }
 
 // Make the populated mapping eligible for asynchronous kernel promotion.
