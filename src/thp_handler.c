@@ -27,20 +27,21 @@ size_t THP_COLLAPSE_RETRIES = 3;
 // [INTERNAL STATE] ======================
 // The container mutex protects the queue, counters and all region state changes.
 // Only the fault thread uses uffd after startup. The worker never resolves faults.
+// TODO: make the namings more intuitive
 struct thp_handler
 {
     struct thp_container * container;
-    size_t * queue; // one entry per region; a region is queued at most once
+    size_t * queue;              /* [promotion_thread] one entry per region; a region is queued at most once [promotion_thread] */
     size_t queue_head;
     size_t queue_tail;
-    pthread_cond_t work_ready;
-    pthread_t fault_thread;
-    pthread_t promotion_thread;
-    int stop_fd;
-    int fault_started;
-    int promotion_started;
-    int worker_stop;
-    int stopped;
+    pthread_cond_t work_ready;   /* [promotion_thread] */
+    pthread_t fault_thread;      /* fault thread: uffd handler, worked on file descriptors (fd), signalled using stop_fd */
+    pthread_t promotion_thread;  /* HP promotion thread: worked on queue, signalled using worker_stop, driven by work_ready (condition) */
+    int stop_fd;                 /* [fault_thread] stop signal */
+    int fault_started;           /* [fault_thread] if is running */
+    int promotion_started;       /* [promotion_thread] if is running */
+    int worker_stop;             /* [promotion_thread] stop signal */
+    int stopped;                 /* overall handler running status */
     struct thp_handler_stats stats;
 };
 
