@@ -60,7 +60,7 @@ int thp_handler_destroy(struct thp_handler ** handler);
 //   ... userspace workload accesses container->base; join all workload threads ...
 //   thp_handler_stop(handler);
 //   thp_handler_snapshot(handler, &stats);
-//   struct thp_region region = { 0 };
+//   struct thp_region region = { .state = THP_TRACKING_STOPPED };
 //   thp_container_region(container, index, &region);
 //   ... inspect the snapshot ...
 //   thp_container_region_destroy(&region); // release the copied bitmap

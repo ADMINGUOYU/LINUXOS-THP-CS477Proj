@@ -177,6 +177,7 @@ int thp_container_create(struct thp_container ** output, size_t region_count,
         return -1;
     container->uffd = -1;
     container->policy = policy;
+    container->handler_attached = 0;
     container->length = region_count * region_bytes;
     container->region_count = region_count;
     container->base_page_bytes = base_page_bytes;
@@ -192,6 +193,10 @@ int thp_container_create(struct thp_container ** output, size_t region_count,
     // calloc places metadata outside the mmap range registered with userfaultfd.
     if (policy == THP_POLICY_SELECTIVE)
         container->regions = calloc(region_count, sizeof(*container->regions));
+    // Initialise every state
+    if (container->regions != NULL)
+        for (index = 0; index < region_count; ++index)
+            container->regions[index].state = THP_TRACKING_STOPPED;
     // Allocate every bitmap separately from the registered application mapping.
     failure = policy == THP_POLICY_SELECTIVE && container->regions == NULL ? ENOMEM : 0;
     for (index = 0; failure == 0 && policy == THP_POLICY_SELECTIVE && index < region_count; ++index)
@@ -215,6 +220,10 @@ int thp_container_create(struct thp_container ** output, size_t region_count,
         errno = failure;
         return -1;
     }
+    // Tracking begins only after the mapping has been successfully registered
+    if (policy == THP_POLICY_SELECTIVE)
+        for (index = 0; index < region_count; ++index)
+            container->regions[index].state = THP_TRACKING;
     *output = container;
     return 0;
 }
@@ -310,7 +319,7 @@ void thp_container_region_destroy(struct thp_region * region)
         return;
     // Clear the pointer and metadata together so repeated cleanup is harmless.
     free(region->bitmap);
-    *region = (struct thp_region){ 0 };
+    *region = (struct thp_region){ .state = THP_TRACKING_STOPPED };
 }
 
 // Closing the last uffd reference wakes waiters and unregisters remaining ranges.

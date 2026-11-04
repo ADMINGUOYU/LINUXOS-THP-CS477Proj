@@ -336,6 +336,10 @@ int thp_handler_start(struct thp_handler ** output, struct thp_container * conta
     }
     handler->container = container;
     handler->stop_fd = -1;
+    handler->fault_started = 0;
+    handler->promotion_started = 0;
+    handler->worker_stop = 0;
+    handler->stopped = 0;
     failure = pthread_cond_init(&handler->work_ready, NULL);
     if (failure != 0)
     {
